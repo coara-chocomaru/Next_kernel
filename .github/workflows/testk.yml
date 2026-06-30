@@ -1,0 +1,87 @@
+name: Extract Kernel Headers for Device Tree
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+    branches:
+      - master
+  workflow_dispatch:
+
+env:
+  TOP: ${{ github.workspace }}
+  KERNEL_DIR: kernel-4.14
+  KBUILD_OUTPUT: out
+  ARCH: arm64
+  CROSS_COMPILE: aarch64-linux-gnu-
+  DEFCONFIG: a05ba_defconfig
+  HEADER_INSTALL_DIR: device/mediatek/mt8168/kernel-headers
+
+jobs:
+  extract-headers:
+    name: Extract Kernel Headers
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            build-essential bc bison flex libssl-dev libelf-dev \
+            gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu \
+            make python3 git curl ccache kmod
+
+      - name: Verify kernel source directory
+        run: |
+          if [ ! -d "$KERNEL_DIR" ]; then
+            echo "Error: $KERNEL_DIR directory not found"
+            exit 1
+          fi
+
+      - name: Configure kernel (required for headers)
+        working-directory: ${{ env.KERNEL_DIR }}
+        run: |
+          mkdir -p "$KBUILD_OUTPUT"
+          make O="$KBUILD_OUTPUT" ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" TOP="$TOP" "$DEFCONFIG"
+
+      - name: Generate and install kernel headers
+        working-directory: ${{ env.KERNEL_DIR }}
+        run: |
+          make O="$KBUILD_OUTPUT" ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" TOP="$TOP" headers_install INSTALL_HDR_PATH="../$HEADER_INSTALL_DIR"
+
+      - name: Copy dt-bindings headers (not included in headers_install)
+        working-directory: ${{ env.KERNEL_DIR }}
+        run: |
+          mkdir -p "../$HEADER_INSTALL_DIR/include"
+          cp -r include/dt-bindings "../$HEADER_INSTALL_DIR/include/"
+
+      - name: Package kernel headers
+        run: |
+          zip -r kernel-headers.zip "$HEADER_INSTALL_DIR"
+
+      - name: Upload kernel headers artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-headers-mt8168
+          path: kernel-headers.zip
+          retention-days: 30
+          compression-level: 6
+
+      - name: Upload to Release (optional)
+        uses: softprops/action-gh-release@v2
+        if: github.event_name != 'pull_request'
+        with:
+          tag_name: headers-${{ github.run_number }}
+          name: "Kernel Headers - ${{ github.run_number }}"
+          draft: false
+          prerelease: false
+          files: kernel-headers.zip
